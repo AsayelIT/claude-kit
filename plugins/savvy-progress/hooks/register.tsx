@@ -259,6 +259,21 @@ const label = (f: Flow): string => {
 
 const ratio = (f: Flow): number => (f.isFinished ? 1 : f.total ? f.done / f.total : 0)
 
+// The bar as the agents themselves show it. Running counts the savvy workers whose
+// rows still run: the Agent call returns at once for a background worker, so its own
+// counter drops to zero while the worker works. When the orchestrator never reported a
+// plan (the `progress` tool did not reach the session), each distinct task among the
+// workers counts once, done when its latest run finished.
+const live = (f: Flow, list: AgentRun[]): Flow => {
+  const runs = list.filter(a => tierOf(a.type) !== 'other')
+  const running = runs.filter(a => a.status === 'running').length
+  if (f.isFinished || f.total) return { ...f, running }
+  const latest = new Map<string, AgentRun>()
+  for (const a of runs) latest.set(norm(a.description) || a.id, a)
+  const tasks = [...latest.values()]
+  return { ...f, running, total: tasks.length, done: tasks.filter(a => a.status === 'done').length }
+}
+
 // Deterministic noise so the dither does not shimmer between redraws.
 const noise = (x: number, y: number): number => {
   const s = Math.sin(x * 12.9898 + y * 78.233) * 43758.5453
@@ -1235,8 +1250,8 @@ export const register: Register = (on, options) => {
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    const f = await read($, flow)
-    if (f === null || e.props.hasSurvey) return next(e)
+    const stored = await read($, flow)
+    if (stored === null || e.props.hasSurvey) return next(e)
     // Draw this row with the other mods' bands beneath it. Claude Code's own placeholder ({ type: 'engine' }) is
     // never nested: the desktop drops a band that nests it.
     const drawn = await Promise.resolve(next(e)).catch(() => null)
@@ -1245,6 +1260,7 @@ export const register: Register = (on, options) => {
     const ui = $.ui.resolve(e)
     const { Box, Text, Button } = ui
     const list = await read($, agents)
+    const f = live(stored, list)
     const crew = list.length + plannedOf(f, list).length
     const isWorking = list.some(a => a.status === 'running')
     const crewButton = (
